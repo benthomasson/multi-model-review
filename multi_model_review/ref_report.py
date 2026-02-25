@@ -36,7 +36,12 @@ def format_ref_report(result: RefAggregateResult, verbose: bool = False) -> str:
         all_ok = all(_verdict_ok(v) for _, v in verdicts_for_ref)
         fetch_tag = ""
         if any_fetched:
-            fetch_tag = " (fetched)" if ref.fetched_content else " (memory)"
+            if ref.fetched_content and ref.fetched_content.startswith("Source: local"):
+                fetch_tag = " (local)"
+            elif ref.fetched_content:
+                fetch_tag = " (fetched)"
+            else:
+                fetch_tag = " (memory)"
         if all_ok:
             ok_count += 1
             if verbose:

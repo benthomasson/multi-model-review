@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import re
 import sys
 import time
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Optional
 
 from . import Reference
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "multi-model-review" / "refs"
 
@@ -37,7 +40,7 @@ _JOURNAL_MARKERS = {
 
 @dataclass
 class FetchResult:
-    source: str = "none"  # "semantic_scholar", "crossref", "arxiv", "none"
+    source: str = "none"  # "semantic_scholar", "crossref", "arxiv", "local", "none"
     title: str = ""
     authors: list[str] = field(default_factory=list)
     year: str = ""
@@ -423,54 +426,218 @@ def _cache_put(entry_text: str, result: FetchResult, cache_dir: Path) -> None:
     path.write_text(json.dumps(asdict(result), indent=2))
 
 
+# --- Local paper loading ---
+
+_LOCAL_EXTENSIONS = (".pdf", ".txt", ".md")
+_LOCAL_TEXT_LIMIT = 8000  # chars (~2000 words)
+
+
+def _match_local_file(ref: Reference, papers_dir: Path) -> Optional[Path]:
+    """Find a local paper file matching this reference.
+
+    Tries exact key match first (e.g. Kesten1959.pdf), then fuzzy title match.
+    """
+    files = [f for f in papers_dir.iterdir() if f.is_file() and f.suffix.lower() in _LOCAL_EXTENSIONS]
+
+    # 1. Exact key match
+    for ext in _LOCAL_EXTENSIONS:
+        for f in files:
+            if f.name.lower() == (ref.key + ext).lower():
+                return f
+
+    # 2. Fuzzy title match
+    title = _extract_title(ref.entry_text)
+    if not title:
+        return None
+
+    # Normalize title to filename-like pattern for comparison
+    pattern = re.sub(r"[^\w\s]", "", title)
+    pattern = pattern.replace(" ", "_")
+
+    best_path = None
+    best_score = 0.0
+    for f in files:
+        stem = f.stem
+        # Compare using word overlap: convert underscores/hyphens to spaces
+        stem_words = re.sub(r"[_\-]", " ", stem)
+        score = _title_similarity(pattern.replace("_", " "), stem_words)
+        if score > best_score:
+            best_score = score
+            best_path = f
+
+    if best_score >= 0.4:
+        return best_path
+    return None
+
+
+def _extract_pdf_text(path: Path) -> str:
+    """Extract text from a local paper file (PDF, TXT, or MD).
+
+    For PDFs, requires pypdf. If not installed, returns empty string with a warning.
+    Truncates to _LOCAL_TEXT_LIMIT characters.
+    """
+    suffix = path.suffix.lower()
+    if suffix in (".txt", ".md"):
+        text = path.read_text(errors="replace")
+        return text[:_LOCAL_TEXT_LIMIT]
+
+    if suffix == ".pdf":
+        try:
+            import pypdf
+        except ImportError:
+            logger.warning("pypdf not installed — skipping PDF %s (pip install pypdf)", path.name)
+            return ""
+        try:
+            reader = pypdf.PdfReader(path)
+            pages = []
+            total = 0
+            for page in reader.pages:
+                page_text = page.extract_text() or ""
+                pages.append(page_text)
+                total += len(page_text)
+                if total >= _LOCAL_TEXT_LIMIT:
+                    break
+            text = "\n".join(pages)
+            return text[:_LOCAL_TEXT_LIMIT]
+        except Exception as e:
+            logger.warning("Failed to read PDF %s: %s", path.name, e)
+            return ""
+
+    return ""
+
+
+def _load_local_paper(ref: Reference, papers_dir: Path) -> Optional[FetchResult]:
+    """Try to load a local paper file for this reference."""
+    path = _match_local_file(ref, papers_dir)
+    if path is None:
+        return None
+    text = _extract_pdf_text(path)
+    if not text:
+        return None
+    return FetchResult(source="local", title=path.stem, abstract=text)
+
+
+def _download_paper(url: str, dest: Path, quiet: bool = False) -> bool:
+    """Download a paper from a URL to a local file.
+
+    Returns True on success, False on failure.
+    """
+    if dest.exists():
+        return True
+    try:
+        data = _url_fetch(url, timeout=30)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        return True
+    except (urllib.error.URLError, urllib.error.HTTPError,
+            OSError, TimeoutError) as e:
+        if not quiet:
+            print(f"  Download failed: {e}", file=sys.stderr)
+        return False
+
+
+def _try_download_paper(result: FetchResult, ref: Reference,
+                        papers_dir: Path, quiet: bool = False) -> FetchResult:
+    """If result has an open access URL, download the PDF and upgrade the abstract.
+
+    Downloads to papers_dir/{ref.key}.pdf. On success, replaces the abstract
+    with extracted full text so the model sees the complete paper.
+    Returns the (possibly upgraded) result.
+    """
+    url = result.open_access_url
+    if not url:
+        return result
+
+    dest = papers_dir / f"{ref.key}.pdf"
+    if not _download_paper(url, dest, quiet=quiet):
+        return result
+
+    text = _extract_pdf_text(dest)
+    if not text:
+        return result
+
+    if not quiet:
+        print(f"  Downloaded {dest.name} ({len(text)} chars)", file=sys.stderr)
+
+    # Upgrade: keep all metadata but replace abstract with full text
+    return FetchResult(
+        source=result.source,
+        title=result.title,
+        authors=result.authors,
+        year=result.year,
+        venue=result.venue,
+        abstract=text,
+        doi=result.doi,
+        open_access_url=result.open_access_url,
+    )
+
+
 # --- Orchestration ---
 
-def fetch_one(ref: Reference, cache_dir: Path) -> FetchResult:
+def fetch_one(ref: Reference, cache_dir: Path, papers_dir: Optional[Path] = None,
+              quiet: bool = False) -> FetchResult:
     """Fetch metadata for a single reference.
 
     Pipeline:
     1. Check cache
-    2. If entry has arXiv ID, try arXiv API
-    3. Try Semantic Scholar
-    4. Fall back to CrossRef
-    5. Return source="none" if all fail
+    2. Try local paper file (if papers_dir set)
+    3. If entry has arXiv ID, try arXiv API
+    4. Try Semantic Scholar
+    5. Fall back to CrossRef
+    6. Return source="none" if all fail
+
+    When papers_dir is set, open-access papers are downloaded to that
+    directory and their full text replaces the API abstract.
     """
     # 1. Cache check
     cached = _cache_get(ref.entry_text, cache_dir)
     if cached is not None:
         return cached
 
-    # 2. arXiv by ID
+    # 2. Local paper
+    if papers_dir:
+        result = _load_local_paper(ref, papers_dir)
+        if result:
+            _cache_put(ref.entry_text, result, cache_dir)
+            return result
+
+    # 3. arXiv by ID
     arxiv_id = _extract_arxiv_id(ref.entry_text)
     if arxiv_id:
         result = _fetch_arxiv(arxiv_id)
         if result and result.source != "none":
+            if papers_dir:
+                result = _try_download_paper(result, ref, papers_dir, quiet=quiet)
             _cache_put(ref.entry_text, result, cache_dir)
             return result
 
-    # 3. Semantic Scholar
+    # 4. Semantic Scholar
     query = _parse_search_query(ref.entry_text)
     if query.strip():
         result = _search_semantic_scholar(query)
         if result and result.source != "none":
+            if papers_dir:
+                result = _try_download_paper(result, ref, papers_dir, quiet=quiet)
             _cache_put(ref.entry_text, result, cache_dir)
             return result
 
-    # 4. CrossRef
+    # 5. CrossRef
     if query.strip():
         result = _search_crossref(query)
         if result and result.source != "none":
+            if papers_dir:
+                result = _try_download_paper(result, ref, papers_dir, quiet=quiet)
             _cache_put(ref.entry_text, result, cache_dir)
             return result
 
-    # 5. All failed
+    # 6. All failed
     miss = FetchResult(source="none")
     _cache_put(ref.entry_text, miss, cache_dir)
     return miss
 
 
 def fetch_refs(refs: list[Reference], cache_dir: Path = DEFAULT_CACHE_DIR,
-               quiet: bool = False) -> None:
+               papers_dir: Optional[Path] = None, quiet: bool = False) -> None:
     """Fetch metadata for all references, populating ref.fetched_content in place.
 
     Fetches are best-effort: failures are logged but never fatal.
@@ -479,7 +646,7 @@ def fetch_refs(refs: list[Reference], cache_dir: Path = DEFAULT_CACHE_DIR,
         if not quiet:
             print(f"Fetching [{ref.key}] ({i}/{len(refs)})...", end=" ", file=sys.stderr)
         try:
-            result = fetch_one(ref, cache_dir)
+            result = fetch_one(ref, cache_dir, papers_dir=papers_dir, quiet=quiet)
             ref.fetched_content = result.to_prompt_text()
             if not quiet:
                 if result.source != "none":

@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 
+[project.optional-dependencies]
+pdf = ["pypdf>=4.0"]
+
 [project.scripts]
 multi-model-review = "multi_model_review.cli:main"
 

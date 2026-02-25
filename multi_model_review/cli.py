@@ -245,7 +245,8 @@ def cmd_check_refs(args):
 
     if getattr(args, "fetch", False):
         cache_dir = getattr(args, "cache_dir", None) or DEFAULT_CACHE_DIR
-        fetch_refs(refs, cache_dir=cache_dir, quiet=args.quiet)
+        papers_dir = getattr(args, "papers_dir", None)
+        fetch_refs(refs, cache_dir=cache_dir, papers_dir=papers_dir, quiet=args.quiet)
         fetched = sum(1 for r in refs if r.fetched_content)
         if not args.quiet:
             print(f"Fetched metadata for {fetched}/{len(refs)} references", file=sys.stderr)
@@ -332,6 +333,8 @@ def main():
                         help="Fetch paper metadata from academic APIs before verification")
     refs_p.add_argument("--cache-dir", type=Path, default=None,
                         help=f"Cache directory for fetched metadata (default: {DEFAULT_CACHE_DIR})")
+    refs_p.add_argument("--papers-dir", type=Path, default=None,
+                        help="Directory containing locally downloaded papers (PDF/TXT/MD)")
 
     # install-skill
     skill_p = sub.add_parser("install-skill", help="Install Claude Code skill")
