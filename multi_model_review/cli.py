@@ -180,8 +180,8 @@ def main():
                        help="Path to belief registry (beliefs.md)")
         p.add_argument("--entries", type=Path, default=None,
                        help="Path to entries directory for chronological context")
-        p.add_argument("--timeout", type=int, default=300,
-                       help="Timeout per model in seconds (default: 300)")
+        p.add_argument("--timeout", type=int, default=600,
+                       help="Timeout per model in seconds (default: 600)")
 
     # review
     review_p = sub.add_parser("review", help="Send file to all models for review")

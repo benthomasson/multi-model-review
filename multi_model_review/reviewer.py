@@ -8,9 +8,12 @@ import subprocess
 from . import ClaimVerdict, ReviewResult
 
 
+# Commands for stdin-piped invocation.
+# claude: -p is --print (boolean flag), prompt comes from stdin
+# gemini: -p is --prompt (takes string), empty string makes it read stdin
 MODEL_COMMANDS = {
     "claude": ["claude", "-p"],
-    "gemini": ["gemini", "-p"],
+    "gemini": ["gemini", "-p", ""],
 }
 
 
@@ -23,19 +26,23 @@ def check_model_available(model: str) -> bool:
 
 
 def run_model(model: str, prompt: str, timeout: int = 300) -> str:
-    """Run a model CLI and return its response text."""
+    """Run a model CLI and return its response text.
+
+    Pipes the prompt via stdin to avoid OS argument length limits
+    on large documents.
+    """
     cmd = MODEL_COMMANDS.get(model)
     if not cmd:
         raise ValueError(f"Unknown model: {model}. Known models: {', '.join(MODEL_COMMANDS)}")
-
-    full_cmd = cmd + [prompt]
 
     # Remove CLAUDECODE env var to allow running from within Claude Code
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
 
+    # Pipe prompt via stdin — CLI arg would hit OS limits on large docs
     result = subprocess.run(
-        full_cmd, capture_output=True, text=True, timeout=timeout, env=env
+        cmd, capture_output=True, text=True, timeout=timeout,
+        env=env, input=prompt,
     )
     if result.returncode != 0:
         raise RuntimeError(f"{model} failed (exit {result.returncode}): {result.stderr}")
