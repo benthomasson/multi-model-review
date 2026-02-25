@@ -10,6 +10,7 @@ from .prompt import build_prompt, load_document, load_beliefs, load_entries
 from .reviewer import check_model_available, review_file
 from .report import format_report, format_compare, format_json, format_gate
 from .refs import load_and_extract
+from .ref_prompt import build_ref_prompt
 from .ref_reviewer import review_refs
 from .ref_report import format_ref_report, format_ref_json
 from .fetcher import fetch_refs, DEFAULT_CACHE_DIR
@@ -116,14 +117,19 @@ def maybe_save(result: AggregateResult, args, quiet: bool) -> None:
 
 
 def cmd_review(args):
-    models = parse_models(args.models)
-    if not preflight_check(models, quiet=args.quiet):
-        sys.exit(1)
-
     document = load_document(args.file)
     beliefs = load_beliefs(args.beliefs) if args.beliefs else None
     entries = load_entries(args.entries) if args.entries else None
     prompt = build_prompt(document, beliefs=beliefs, entries=entries)
+
+    if args.save_prompt:
+        args.save_prompt.write_text(prompt)
+        print(f"Prompt saved to {args.save_prompt}", file=sys.stderr)
+        sys.exit(0)
+
+    models = parse_models(args.models)
+    if not preflight_check(models, quiet=args.quiet):
+        sys.exit(1)
 
     result = run_reviews(args.file, models, prompt, args.timeout, args.quiet)
     maybe_save(result, args, args.quiet)
@@ -137,14 +143,19 @@ def cmd_review(args):
 
 
 def cmd_compare(args):
-    models = parse_models(args.models)
-    if not preflight_check(models, quiet=args.quiet):
-        sys.exit(1)
-
     document = load_document(args.file)
     beliefs = load_beliefs(args.beliefs) if args.beliefs else None
     entries = load_entries(args.entries) if args.entries else None
     prompt = build_prompt(document, beliefs=beliefs, entries=entries)
+
+    if args.save_prompt:
+        args.save_prompt.write_text(prompt)
+        print(f"Prompt saved to {args.save_prompt}", file=sys.stderr)
+        sys.exit(0)
+
+    models = parse_models(args.models)
+    if not preflight_check(models, quiet=args.quiet):
+        sys.exit(1)
 
     result = run_reviews(args.file, models, prompt, args.timeout, args.quiet)
     maybe_save(result, args, args.quiet)
@@ -158,6 +169,16 @@ def cmd_compare(args):
 
 
 def cmd_gate(args):
+    document = load_document(args.file)
+    beliefs = load_beliefs(args.beliefs) if args.beliefs else None
+    entries = load_entries(args.entries) if args.entries else None
+    prompt = build_prompt(document, beliefs=beliefs, entries=entries)
+
+    if args.save_prompt:
+        args.save_prompt.write_text(prompt)
+        print(f"Prompt saved to {args.save_prompt}", file=sys.stderr)
+        sys.exit(0)
+
     models = parse_models(args.models)
     if not preflight_check(models, quiet=True):
         # Print just the missing models for gate mode
@@ -165,11 +186,6 @@ def cmd_gate(args):
             if not check_model_available(model):
                 print(f"missing: {model}", file=sys.stderr)
         sys.exit(1)
-
-    document = load_document(args.file)
-    beliefs = load_beliefs(args.beliefs) if args.beliefs else None
-    entries = load_entries(args.entries) if args.entries else None
-    prompt = build_prompt(document, beliefs=beliefs, entries=entries)
 
     result = run_reviews(args.file, models, prompt, args.timeout, quiet=True)
     maybe_save(result, args, True)
@@ -231,10 +247,6 @@ def save_ref_results(result: RefAggregateResult, save_dir: Path, quiet: bool) ->
 
 
 def cmd_check_refs(args):
-    models = parse_models(args.models)
-    if not preflight_check(models, quiet=args.quiet):
-        sys.exit(1)
-
     refs = load_and_extract(args.file)
     if not refs:
         print(f"No references found in {args.file}", file=sys.stderr)
@@ -250,6 +262,18 @@ def cmd_check_refs(args):
         fetched = sum(1 for r in refs if r.fetched_content)
         if not args.quiet:
             print(f"Fetched metadata for {fetched}/{len(refs)} references", file=sys.stderr)
+
+    if args.save_prompt:
+        args.save_prompt.mkdir(parents=True, exist_ok=True)
+        for ref in refs:
+            prompt = build_ref_prompt(ref)
+            (args.save_prompt / f"ref-{ref.key}.md").write_text(prompt)
+        print(f"Saved {len(refs)} prompts to {args.save_prompt}/", file=sys.stderr)
+        sys.exit(0)
+
+    models = parse_models(args.models)
+    if not preflight_check(models, quiet=args.quiet):
+        sys.exit(1)
 
     reviews = []
     for model in models:
@@ -307,6 +331,8 @@ def main():
                        help="Timeout per model in seconds (default: 600)")
         p.add_argument("--save-dir", type=Path, default=None,
                        help="Save raw responses and aggregate JSON to this directory")
+        p.add_argument("--save-prompt", type=Path, default=None,
+                       help="Save the review prompt to a file (or directory for check-refs) and exit")
 
     # review
     review_p = sub.add_parser("review", help="Send file to all models for review")
