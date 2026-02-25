@@ -63,3 +63,31 @@ class RefAggregateResult:
     reviews: list[RefReviewResult] = field(default_factory=list)
     references: list[Reference] = field(default_factory=list)
     disagreements: list[dict] = field(default_factory=list)  # per-axis disagreements
+
+
+@dataclass
+class DerivVerdict:
+    deriv_id: str          # "poisson-eq", "eq-3", etc.
+    equation: str          # the equation text
+    verdict: str           # VALID / GAP / INVALID
+    classification: str    # DERIVED / MATCHED / INHERITED / PREDICTED / AXIOM
+    circularity: str       # NONE / SUSPECTED / CONFIRMED
+    reasoning: str
+
+
+@dataclass
+class DerivReviewResult:
+    model: str
+    verdicts: list[DerivVerdict] = field(default_factory=list)
+    raw_response: str = ""
+    valid_count: int = 0
+    gap_count: int = 0
+    invalid_count: int = 0
+
+
+@dataclass
+class DerivAggregateResult:
+    file_reviewed: str
+    models: list[str] = field(default_factory=list)
+    reviews: list[DerivReviewResult] = field(default_factory=list)
+    disagreements: list[dict] = field(default_factory=list)

@@ -5,7 +5,7 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
-from . import AggregateResult, RefAggregateResult
+from . import AggregateResult, RefAggregateResult, DerivAggregateResult
 from .prompt import build_prompt, load_document, load_beliefs, load_entries
 from .reviewer import check_model_available, review_file
 from .report import format_report, format_compare, format_json, format_gate
@@ -14,6 +14,9 @@ from .ref_prompt import build_ref_prompt
 from .ref_reviewer import review_refs
 from .ref_report import format_ref_report, format_ref_json
 from .fetcher import fetch_refs, DEFAULT_CACHE_DIR
+from .deriv_prompt import build_deriv_prompt
+from .deriv_reviewer import review_derivations
+from .deriv_report import format_deriv_report, format_deriv_json
 
 
 DEFAULT_MODELS = ["claude", "gemini"]
@@ -293,6 +296,94 @@ def cmd_check_refs(args):
         print(format_ref_report(result, verbose=args.verbose))
 
 
+def aggregate_deriv_reviews(file_path: str, reviews: list) -> DerivAggregateResult:
+    """Aggregate derivation reviews with per-axis disagreement detection."""
+    result = DerivAggregateResult(
+        file_reviewed=file_path,
+        models=[r.model for r in reviews],
+        reviews=reviews,
+    )
+
+    # Find disagreements: per deriv_id, per axis, check if models differ
+    axes = ["verdict", "classification", "circularity"]
+    # Build map: deriv_id -> axis -> {model: value}
+    deriv_axes: dict[str, dict[str, dict[str, str]]] = {}
+    for review in reviews:
+        for v in review.verdicts:
+            if v.deriv_id not in deriv_axes:
+                deriv_axes[v.deriv_id] = {a: {} for a in axes}
+            deriv_axes[v.deriv_id]["verdict"][review.model] = v.verdict
+            deriv_axes[v.deriv_id]["classification"][review.model] = v.classification
+            deriv_axes[v.deriv_id]["circularity"][review.model] = v.circularity
+
+    for deriv_id, axis_map in deriv_axes.items():
+        for axis, model_vals in axis_map.items():
+            if len(set(model_vals.values())) > 1:
+                result.disagreements.append({
+                    "deriv_id": deriv_id,
+                    "axis": axis,
+                    "verdicts": dict(model_vals),
+                })
+
+    return result
+
+
+def save_deriv_results(result: DerivAggregateResult, save_dir: Path, quiet: bool) -> Path:
+    """Save per-model raw responses and aggregate JSON."""
+    ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    out = save_dir / f"check-derivs-{ts}"
+    out.mkdir(parents=True, exist_ok=True)
+
+    for review in result.reviews:
+        (out / f"{review.model}.raw.md").write_text(review.raw_response)
+
+    (out / "aggregate.json").write_text(format_deriv_json(result))
+
+    if not quiet:
+        print(f"Saved to {out}/", file=sys.stderr)
+
+    return out
+
+
+def cmd_check_derivs(args):
+    document = load_document(args.file)
+    beliefs = load_beliefs(args.beliefs) if args.beliefs else None
+    entries = load_entries(args.entries) if args.entries else None
+    prompt = build_deriv_prompt(document, beliefs=beliefs, entries=entries)
+
+    if args.save_prompt:
+        args.save_prompt.write_text(prompt)
+        print(f"Prompt saved to {args.save_prompt}", file=sys.stderr)
+        sys.exit(0)
+
+    models = parse_models(args.models)
+    if not preflight_check(models, quiet=args.quiet):
+        sys.exit(1)
+
+    reviews = []
+    for model in models:
+        if not args.quiet:
+            print(f"Sending to {model}...", file=sys.stderr)
+        try:
+            review = review_derivations(model, prompt, timeout=args.timeout)
+            reviews.append(review)
+            if not args.quiet:
+                print(f"  {model}: {review.valid_count}V / {review.gap_count}G / {review.invalid_count}I",
+                      file=sys.stderr)
+        except Exception as e:
+            print(f"Error from {model}: {e}", file=sys.stderr)
+
+    result = aggregate_deriv_reviews(str(args.file), reviews)
+
+    if getattr(args, "save_dir", None):
+        save_deriv_results(result, args.save_dir, args.quiet)
+
+    if args.json:
+        print(format_deriv_json(result))
+    else:
+        print(format_deriv_report(result, verbose=args.verbose))
+
+
 def cmd_install_skill(args):
     import shutil
     skill_source = Path(__file__).parent / "data" / "SKILL.md"
@@ -329,8 +420,8 @@ def main():
                        help="Path to entries directory for chronological context")
         p.add_argument("--timeout", type=int, default=600,
                        help="Timeout per model in seconds (default: 600)")
-        p.add_argument("--save-dir", type=Path, default=None,
-                       help="Save raw responses and aggregate JSON to this directory")
+        p.add_argument("--save-dir", type=Path, default=Path("reviews"),
+                       help="Save raw responses and aggregate JSON to this directory (default: reviews/)")
         p.add_argument("--save-prompt", type=Path, default=None,
                        help="Save the review prompt to a file (or directory for check-refs) and exit")
 
@@ -362,6 +453,12 @@ def main():
     refs_p.add_argument("--papers-dir", type=Path, default=None,
                         help="Directory containing locally downloaded papers (PDF/TXT/MD)")
 
+    # check-derivs
+    derivs_p = sub.add_parser("check-derivs", help="Verify every derivation/equation in a paper")
+    add_review_args(derivs_p)
+    derivs_p.add_argument("--json", action="store_true", help="Output as JSON")
+    derivs_p.add_argument("--verbose", "-v", action="store_true", help="Show VALID derivations too")
+
     # install-skill
     skill_p = sub.add_parser("install-skill", help="Install Claude Code skill")
     skill_p.add_argument("--skill-dir", type=Path, default=Path(".claude/skills"),
@@ -374,6 +471,7 @@ def main():
         "compare": cmd_compare,
         "gate": cmd_gate,
         "check-refs": cmd_check_refs,
+        "check-derivs": cmd_check_derivs,
         "install-skill": cmd_install_skill,
     }
     commands[args.command](args)

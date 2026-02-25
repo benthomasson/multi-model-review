@@ -22,6 +22,12 @@ multi-model-review review <file.md> --entries entries/
 
 # JSON output for programmatic use
 multi-model-review review <file.md> --json
+
+# Verify every derivation/equation in a paper
+multi-model-review check-derivs <file.md>
+
+# Check derivations with belief context
+multi-model-review check-derivs <file.md> --beliefs beliefs.md --entries entries/
 ```
 
 ## What it does
@@ -33,4 +39,5 @@ Sends a document to multiple AI models via their CLI tools (`claude -p`, `gemini
 - `review` — Full review with all claims and verdicts
 - `compare` — Disagreement-focused output
 - `gate` — Binary exit code (0=PASS, 1=BLOCK) for CI use
+- `check-derivs` — Verify every derivation/equation (validity, classification, circularity)
 - `install-skill` — Install this skill file
