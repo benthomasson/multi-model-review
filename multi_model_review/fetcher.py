@@ -14,6 +14,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
 
+import pypdf
+
 from . import Reference
 
 logger = logging.getLogger(__name__)
@@ -482,11 +484,6 @@ def _extract_pdf_text(path: Path) -> str:
         return text[:_LOCAL_TEXT_LIMIT]
 
     if suffix == ".pdf":
-        try:
-            import pypdf
-        except ImportError:
-            logger.warning("pypdf not installed — skipping PDF %s (pip install pypdf)", path.name)
-            return ""
         try:
             reader = pypdf.PdfReader(path)
             pages = []
