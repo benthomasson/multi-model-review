@@ -2,6 +2,7 @@
 
 import sys
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 from . import AggregateResult
@@ -67,6 +68,23 @@ def preflight_check(models: list[str], quiet: bool = False) -> bool:
     return all_ok
 
 
+def save_results(result: AggregateResult, save_dir: Path, quiet: bool) -> Path:
+    """Save raw responses and aggregate JSON to a timestamped directory."""
+    ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    out = save_dir / ts
+    out.mkdir(parents=True, exist_ok=True)
+
+    for review in result.reviews:
+        (out / f"{review.model}.raw.md").write_text(review.raw_response)
+
+    (out / "aggregate.json").write_text(format_json(result))
+
+    if not quiet:
+        print(f"Saved to {out}/", file=sys.stderr)
+
+    return out
+
+
 def run_reviews(file_path: Path, models: list[str], prompt: str,
                 timeout: int, quiet: bool) -> AggregateResult:
     """Run reviews sequentially across all models and aggregate."""
@@ -87,6 +105,12 @@ def run_reviews(file_path: Path, models: list[str], prompt: str,
     return aggregate_reviews(str(file_path), reviews)
 
 
+def maybe_save(result: AggregateResult, args, quiet: bool) -> None:
+    """Save results if --save-dir was provided."""
+    if getattr(args, "save_dir", None):
+        save_results(result, args.save_dir, quiet)
+
+
 def cmd_review(args):
     models = parse_models(args.models)
     if not preflight_check(models, quiet=args.quiet):
@@ -98,6 +122,7 @@ def cmd_review(args):
     prompt = build_prompt(document, beliefs=beliefs, entries=entries)
 
     result = run_reviews(args.file, models, prompt, args.timeout, args.quiet)
+    maybe_save(result, args, args.quiet)
 
     if args.json:
         print(format_json(result))
@@ -118,6 +143,7 @@ def cmd_compare(args):
     prompt = build_prompt(document, beliefs=beliefs, entries=entries)
 
     result = run_reviews(args.file, models, prompt, args.timeout, args.quiet)
+    maybe_save(result, args, args.quiet)
 
     if args.json:
         print(format_json(result))
@@ -142,6 +168,7 @@ def cmd_gate(args):
     prompt = build_prompt(document, beliefs=beliefs, entries=entries)
 
     result = run_reviews(args.file, models, prompt, args.timeout, quiet=True)
+    maybe_save(result, args, True)
     print(format_gate(result))
     sys.exit(1 if result.gate == "BLOCK" else 0)
 
@@ -182,6 +209,8 @@ def main():
                        help="Path to entries directory for chronological context")
         p.add_argument("--timeout", type=int, default=600,
                        help="Timeout per model in seconds (default: 600)")
+        p.add_argument("--save-dir", type=Path, default=None,
+                       help="Save raw responses and aggregate JSON to this directory")
 
     # review
     review_p = sub.add_parser("review", help="Send file to all models for review")
