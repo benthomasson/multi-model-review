@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Multi-model review gate — standalone entry point."""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from multi_model_review.cli import main
+
+main()

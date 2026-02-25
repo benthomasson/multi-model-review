@@ -1,0 +1,18 @@
+[project]
+name = "multi-model-review"
+version = "0.1.0"
+description = "Multi-model peer review gate for pre-publication quality checks"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+
+[project.scripts]
+multi-model-review = "multi_model_review.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["multi_model_review"]
+artifacts = ["multi_model_review/data/*"]
