@@ -30,3 +30,36 @@ class AggregateResult:
     reviews: list[ReviewResult] = field(default_factory=list)
     gate: str = "PASS"  # PASS only if all models PASS
     disagreements: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class Reference:
+    key: str               # "Kesten1959" or "1"
+    entry_text: str        # Full bibliography entry
+    contexts: list[str] = field(default_factory=list)  # Paragraphs citing this reference
+    fetched_content: str = ""  # Retrieved paper metadata+abstract (from fetcher)
+
+
+@dataclass
+class RefVerdict:
+    ref_key: str
+    exists: str            # YES / NO / UNCERTAIN
+    attribution_correct: str  # YES / NO / PARTIAL
+    supports_claims: str   # YES / NO / PARTIAL
+    reasoning: str
+
+
+@dataclass
+class RefReviewResult:
+    model: str
+    verdicts: list[RefVerdict] = field(default_factory=list)
+    raw_responses: dict[str, str] = field(default_factory=dict)  # ref_key -> raw output
+
+
+@dataclass
+class RefAggregateResult:
+    file_reviewed: str
+    models: list[str] = field(default_factory=list)
+    reviews: list[RefReviewResult] = field(default_factory=list)
+    references: list[Reference] = field(default_factory=list)
+    disagreements: list[dict] = field(default_factory=list)  # per-axis disagreements

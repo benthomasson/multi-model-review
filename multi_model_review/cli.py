@@ -5,10 +5,14 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
-from . import AggregateResult
+from . import AggregateResult, RefAggregateResult
 from .prompt import build_prompt, load_document, load_beliefs, load_entries
 from .reviewer import check_model_available, review_file
 from .report import format_report, format_compare, format_json, format_gate
+from .refs import load_and_extract
+from .ref_reviewer import review_refs
+from .ref_report import format_ref_report, format_ref_json
+from .fetcher import fetch_refs, DEFAULT_CACHE_DIR
 
 
 DEFAULT_MODELS = ["claude", "gemini"]
@@ -173,6 +177,97 @@ def cmd_gate(args):
     sys.exit(1 if result.gate == "BLOCK" else 0)
 
 
+def aggregate_ref_reviews(file_path: str, refs, reviews: list) -> RefAggregateResult:
+    """Aggregate per-reference reviews into a RefAggregateResult with disagreements."""
+    result = RefAggregateResult(
+        file_reviewed=file_path,
+        models=[r.model for r in reviews],
+        reviews=reviews,
+        references=refs,
+    )
+
+    # Find disagreements: per ref_key, per axis, check if models differ
+    axes = ["exists", "attribution_correct", "supports_claims"]
+    # Build map: ref_key -> axis -> {model: value}
+    ref_axes: dict[str, dict[str, dict[str, str]]] = {}
+    for review in reviews:
+        for v in review.verdicts:
+            if v.ref_key not in ref_axes:
+                ref_axes[v.ref_key] = {a: {} for a in axes}
+            ref_axes[v.ref_key]["exists"][review.model] = v.exists
+            ref_axes[v.ref_key]["attribution_correct"][review.model] = v.attribution_correct
+            ref_axes[v.ref_key]["supports_claims"][review.model] = v.supports_claims
+
+    for ref_key, axis_map in ref_axes.items():
+        for axis, model_vals in axis_map.items():
+            if len(set(model_vals.values())) > 1:
+                result.disagreements.append({
+                    "ref_key": ref_key,
+                    "axis": axis,
+                    "verdicts": dict(model_vals),
+                })
+
+    return result
+
+
+def save_ref_results(result: RefAggregateResult, save_dir: Path, quiet: bool) -> Path:
+    """Save per-model per-ref raw responses and aggregate JSON."""
+    ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    out = save_dir / f"check-refs-{ts}"
+    out.mkdir(parents=True, exist_ok=True)
+
+    for review in result.reviews:
+        model_dir = out / review.model
+        model_dir.mkdir(exist_ok=True)
+        for ref_key, raw in review.raw_responses.items():
+            (model_dir / f"ref-{ref_key}.md").write_text(raw)
+
+    (out / "aggregate.json").write_text(format_ref_json(result))
+
+    if not quiet:
+        print(f"Saved to {out}/", file=sys.stderr)
+
+    return out
+
+
+def cmd_check_refs(args):
+    models = parse_models(args.models)
+    if not preflight_check(models, quiet=args.quiet):
+        sys.exit(1)
+
+    refs = load_and_extract(args.file)
+    if not refs:
+        print(f"No references found in {args.file}", file=sys.stderr)
+        sys.exit(1)
+
+    if not args.quiet:
+        print(f"Found {len(refs)} references in {args.file}", file=sys.stderr)
+
+    if getattr(args, "fetch", False):
+        cache_dir = getattr(args, "cache_dir", None) or DEFAULT_CACHE_DIR
+        fetch_refs(refs, cache_dir=cache_dir, quiet=args.quiet)
+        fetched = sum(1 for r in refs if r.fetched_content)
+        if not args.quiet:
+            print(f"Fetched metadata for {fetched}/{len(refs)} references", file=sys.stderr)
+
+    reviews = []
+    for model in models:
+        if not args.quiet:
+            print(f"Sending to {model}...", file=sys.stderr)
+        review = review_refs(model, refs, timeout=args.timeout, quiet=args.quiet)
+        reviews.append(review)
+
+    result = aggregate_ref_reviews(str(args.file), refs, reviews)
+
+    if getattr(args, "save_dir", None):
+        save_ref_results(result, args.save_dir, args.quiet)
+
+    if args.json:
+        print(format_ref_json(result))
+    else:
+        print(format_ref_report(result, verbose=args.verbose))
+
+
 def cmd_install_skill(args):
     import shutil
     skill_source = Path(__file__).parent / "data" / "SKILL.md"
@@ -227,6 +322,17 @@ def main():
     gate_p = sub.add_parser("gate", help="Binary pass/fail gate check (for scripting/CI)")
     add_review_args(gate_p)
 
+    # check-refs
+    refs_p = sub.add_parser("check-refs", help="Verify each reference independently")
+    add_review_args(refs_p)
+    refs_p.set_defaults(timeout=120)  # shorter per-ref timeout
+    refs_p.add_argument("--json", action="store_true", help="Output as JSON")
+    refs_p.add_argument("--verbose", "-v", action="store_true", help="Show passing refs too")
+    refs_p.add_argument("--fetch", action="store_true",
+                        help="Fetch paper metadata from academic APIs before verification")
+    refs_p.add_argument("--cache-dir", type=Path, default=None,
+                        help=f"Cache directory for fetched metadata (default: {DEFAULT_CACHE_DIR})")
+
     # install-skill
     skill_p = sub.add_parser("install-skill", help="Install Claude Code skill")
     skill_p.add_argument("--skill-dir", type=Path, default=Path(".claude/skills"),
@@ -238,6 +344,7 @@ def main():
         "review": cmd_review,
         "compare": cmd_compare,
         "gate": cmd_gate,
+        "check-refs": cmd_check_refs,
         "install-skill": cmd_install_skill,
     }
     commands[args.command](args)
