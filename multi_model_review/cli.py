@@ -142,7 +142,7 @@ def cmd_review(args):
     else:
         print(format_report(result, verbose=args.verbose))
 
-    sys.exit(1 if result.gate == "BLOCK" else 0)
+    sys.exit(2 if result.gate == "BLOCK" else 0)
 
 
 def cmd_compare(args):
@@ -168,7 +168,7 @@ def cmd_compare(args):
     else:
         print(format_compare(result))
 
-    sys.exit(1 if result.gate == "BLOCK" else 0)
+    sys.exit(2 if result.gate == "BLOCK" else 0)
 
 
 def cmd_gate(args):
@@ -193,7 +193,7 @@ def cmd_gate(args):
     result = run_reviews(args.file, models, prompt, args.timeout, quiet=True)
     maybe_save(result, args, True)
     print(format_gate(result))
-    sys.exit(1 if result.gate == "BLOCK" else 0)
+    sys.exit(2 if result.gate == "BLOCK" else 0)
 
 
 def aggregate_ref_reviews(file_path: str, refs, reviews: list) -> RefAggregateResult:

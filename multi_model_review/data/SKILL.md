@@ -30,6 +30,14 @@ multi-model-review check-derivs <file.md>
 multi-model-review check-derivs <file.md> --beliefs beliefs.md --entries entries/
 ```
 
+## Exit codes
+
+- `0` — review complete, gate PASS
+- `1` — error (missing model CLI, file not found, no references found)
+- `2` — review complete, gate BLOCK (models found issues — read the output)
+
+**Exit code 2 is not an error.** It means the review ran successfully and the models found issues that need attention. Read stdout for the full report.
+
 ## What it does
 
 Sends a document to multiple AI models via their CLI tools (`claude -p`, `gemini -p`), parses structured claim-by-claim verdicts, and aggregates results. Any BLOCK from any model blocks the gate. Disagreements between models are highlighted — these are where human attention should focus.
@@ -38,6 +46,6 @@ Sends a document to multiple AI models via their CLI tools (`claude -p`, `gemini
 
 - `review` — Full review with all claims and verdicts
 - `compare` — Disagreement-focused output
-- `gate` — Binary exit code (0=PASS, 1=BLOCK) for CI use
+- `gate` — Binary exit code (0=PASS, 2=BLOCK) for CI use
 - `check-derivs` — Verify every derivation/equation (validity, classification, circularity)
 - `install-skill` — Install this skill file
