@@ -30,6 +30,7 @@ class AggregateResult:
     reviews: list[ReviewResult] = field(default_factory=list)
     gate: str = "PASS"  # PASS only if all models PASS
     disagreements: list[dict] = field(default_factory=list)
+    errors: dict[str, str] = field(default_factory=dict)  # model -> error message
 
 
 @dataclass
@@ -63,6 +64,7 @@ class RefAggregateResult:
     reviews: list[RefReviewResult] = field(default_factory=list)
     references: list[Reference] = field(default_factory=list)
     disagreements: list[dict] = field(default_factory=list)  # per-axis disagreements
+    errors: dict[str, str] = field(default_factory=dict)  # model -> error message
 
 
 @dataclass
@@ -91,3 +93,4 @@ class DerivAggregateResult:
     models: list[str] = field(default_factory=list)
     reviews: list[DerivReviewResult] = field(default_factory=list)
     disagreements: list[dict] = field(default_factory=list)
+    errors: dict[str, str] = field(default_factory=dict)  # model -> error message

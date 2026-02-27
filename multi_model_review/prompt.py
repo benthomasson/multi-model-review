@@ -37,6 +37,7 @@ BLOCK: N
 
 def build_prompt(document: str,
                  beliefs: str | None = None,
+                 nogoods: str | None = None,
                  entries: list[str] | None = None) -> str:
     """Build the full review prompt with document and optional context."""
     parts = [REVIEW_PROMPT]
@@ -50,6 +51,14 @@ def build_prompt(document: str,
                       "and known contradictions. Flag any claims in the paper that "
                       "contradict OUT or STALE beliefs.\n")
         parts.append(beliefs)
+
+    if nogoods:
+        parts.append("\n## Known Contradictions (Nogoods)\n")
+        parts.append("The following are CONFIRMED contradictions established by independent "
+                      "verification. Treat these as ground truth. Do NOT accept any claim "
+                      "in the paper or belief registry that contradicts a nogood — these "
+                      "have already been adjudicated.\n")
+        parts.append(nogoods)
 
     if entries:
         parts.append("\n## Recent Entries (Chronological Context)\n")
@@ -70,6 +79,13 @@ def load_document(path: Path) -> str:
 
 def load_beliefs(path: Path) -> str | None:
     """Load a belief registry file, or None if it doesn't exist."""
+    if path and path.exists():
+        return path.read_text()
+    return None
+
+
+def load_nogoods(path: Path) -> str | None:
+    """Load a nogoods file, or None if it doesn't exist."""
     if path and path.exists():
         return path.read_text()
     return None

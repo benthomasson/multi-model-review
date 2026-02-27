@@ -73,6 +73,12 @@ def format_report(result: AggregateResult, verbose: bool = False) -> str:
     lines.append(f"Models: {', '.join(result.models)}")
     lines.append("")
 
+    if result.errors:
+        lines.append("=== Model Errors ===")
+        for model, error in result.errors.items():
+            lines.append(f"  {model}: {error}")
+        lines.append("")
+
     for review in result.reviews:
         lines.append(format_review(review, verbose=verbose))
 

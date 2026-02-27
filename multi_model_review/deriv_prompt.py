@@ -64,6 +64,7 @@ CIRCULARITY_ISSUES: N
 
 def build_deriv_prompt(document: str,
                        beliefs: str | None = None,
+                       nogoods: str | None = None,
                        entries: list[str] | None = None) -> str:
     """Build the full derivation verification prompt with document and optional context."""
     parts = [DERIV_PROMPT]
@@ -78,6 +79,14 @@ def build_deriv_prompt(document: str,
                       "that support OUT or STALE beliefs — these may indicate circular "
                       "reasoning or invalidated steps.\n")
         parts.append(beliefs)
+
+    if nogoods:
+        parts.append("\n## Known Contradictions (Nogoods)\n")
+        parts.append("The following are CONFIRMED contradictions established by independent "
+                      "verification. Treat these as ground truth. Do NOT accept any derivation "
+                      "or claim in the paper that contradicts a nogood — these have already "
+                      "been adjudicated.\n")
+        parts.append(nogoods)
 
     if entries:
         parts.append("\n## Recent Entries (Chronological Context)\n")

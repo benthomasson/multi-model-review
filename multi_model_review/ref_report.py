@@ -21,6 +21,12 @@ def format_ref_report(result: RefAggregateResult, verbose: bool = False) -> str:
     lines.append(f"References found: {len(result.references)}")
     lines.append("")
 
+    if result.errors:
+        lines.append("=== Model Errors ===")
+        for model, error in result.errors.items():
+            lines.append(f"  {model}: {error}")
+        lines.append("")
+
     # Check if any refs have fetched content
     any_fetched = any(ref.fetched_content for ref in result.references)
 

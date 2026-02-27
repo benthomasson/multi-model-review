@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import AggregateResult, RefAggregateResult, DerivAggregateResult
-from .prompt import build_prompt, load_document, load_beliefs, load_entries
+from .prompt import build_prompt, load_document, load_beliefs, load_nogoods, load_entries
 from .reviewer import check_model_available, review_file
 from .report import format_report, format_compare, format_json, format_gate
 from .refs import load_and_extract
@@ -97,6 +97,7 @@ def run_reviews(file_path: Path, models: list[str], prompt: str,
                 timeout: int, quiet: bool) -> AggregateResult:
     """Run reviews sequentially across all models and aggregate."""
     reviews = []
+    errors = {}
     for model in models:
         if not quiet:
             print(f"Sending to {model}...", file=sys.stderr)
@@ -108,9 +109,11 @@ def run_reviews(file_path: Path, models: list[str], prompt: str,
                       file=sys.stderr)
         except Exception as e:
             print(f"Error from {model}: {e}", file=sys.stderr)
-            # Continue with other models
+            errors[model] = str(e)
 
-    return aggregate_reviews(str(file_path), reviews)
+    result = aggregate_reviews(str(file_path), reviews)
+    result.errors = errors
+    return result
 
 
 def maybe_save(result: AggregateResult, args, quiet: bool) -> None:
@@ -122,8 +125,9 @@ def maybe_save(result: AggregateResult, args, quiet: bool) -> None:
 def cmd_review(args):
     document = load_document(args.file)
     beliefs = load_beliefs(args.beliefs) if args.beliefs else None
+    nogoods = load_nogoods(args.nogoods) if args.nogoods else None
     entries = load_entries(args.entries) if args.entries else None
-    prompt = build_prompt(document, beliefs=beliefs, entries=entries)
+    prompt = build_prompt(document, beliefs=beliefs, nogoods=nogoods, entries=entries)
 
     if args.save_prompt:
         args.save_prompt.write_text(prompt)
@@ -135,6 +139,9 @@ def cmd_review(args):
         sys.exit(1)
 
     result = run_reviews(args.file, models, prompt, args.timeout, args.quiet)
+    if not result.reviews:
+        print("Error: all models failed — no reviews collected", file=sys.stderr)
+        sys.exit(1)
     maybe_save(result, args, args.quiet)
 
     if args.json:
@@ -148,8 +155,9 @@ def cmd_review(args):
 def cmd_compare(args):
     document = load_document(args.file)
     beliefs = load_beliefs(args.beliefs) if args.beliefs else None
+    nogoods = load_nogoods(args.nogoods) if args.nogoods else None
     entries = load_entries(args.entries) if args.entries else None
-    prompt = build_prompt(document, beliefs=beliefs, entries=entries)
+    prompt = build_prompt(document, beliefs=beliefs, nogoods=nogoods, entries=entries)
 
     if args.save_prompt:
         args.save_prompt.write_text(prompt)
@@ -161,6 +169,9 @@ def cmd_compare(args):
         sys.exit(1)
 
     result = run_reviews(args.file, models, prompt, args.timeout, args.quiet)
+    if not result.reviews:
+        print("Error: all models failed — no reviews collected", file=sys.stderr)
+        sys.exit(1)
     maybe_save(result, args, args.quiet)
 
     if args.json:
@@ -174,8 +185,9 @@ def cmd_compare(args):
 def cmd_gate(args):
     document = load_document(args.file)
     beliefs = load_beliefs(args.beliefs) if args.beliefs else None
+    nogoods = load_nogoods(args.nogoods) if args.nogoods else None
     entries = load_entries(args.entries) if args.entries else None
-    prompt = build_prompt(document, beliefs=beliefs, entries=entries)
+    prompt = build_prompt(document, beliefs=beliefs, nogoods=nogoods, entries=entries)
 
     if args.save_prompt:
         args.save_prompt.write_text(prompt)
@@ -191,6 +203,9 @@ def cmd_gate(args):
         sys.exit(1)
 
     result = run_reviews(args.file, models, prompt, args.timeout, quiet=True)
+    if not result.reviews:
+        print("Error: all models failed — no reviews collected", file=sys.stderr)
+        sys.exit(1)
     maybe_save(result, args, True)
     print(format_gate(result))
     sys.exit(2 if result.gate == "BLOCK" else 0)
@@ -279,13 +294,23 @@ def cmd_check_refs(args):
         sys.exit(1)
 
     reviews = []
+    errors = {}
     for model in models:
         if not args.quiet:
             print(f"Sending to {model}...", file=sys.stderr)
-        review = review_refs(model, refs, timeout=args.timeout, quiet=args.quiet)
-        reviews.append(review)
+        try:
+            review = review_refs(model, refs, timeout=args.timeout, quiet=args.quiet)
+            reviews.append(review)
+        except Exception as e:
+            print(f"Error from {model}: {e}", file=sys.stderr)
+            errors[model] = str(e)
+
+    if not reviews:
+        print("Error: all models failed — no reviews collected", file=sys.stderr)
+        sys.exit(1)
 
     result = aggregate_ref_reviews(str(args.file), refs, reviews)
+    result.errors = errors
 
     if getattr(args, "save_dir", None):
         save_ref_results(result, args.save_dir, args.quiet)
@@ -348,8 +373,9 @@ def save_deriv_results(result: DerivAggregateResult, save_dir: Path, quiet: bool
 def cmd_check_derivs(args):
     document = load_document(args.file)
     beliefs = load_beliefs(args.beliefs) if args.beliefs else None
+    nogoods = load_nogoods(args.nogoods) if args.nogoods else None
     entries = load_entries(args.entries) if args.entries else None
-    prompt = build_deriv_prompt(document, beliefs=beliefs, entries=entries)
+    prompt = build_deriv_prompt(document, beliefs=beliefs, nogoods=nogoods, entries=entries)
 
     if args.save_prompt:
         args.save_prompt.write_text(prompt)
@@ -361,6 +387,7 @@ def cmd_check_derivs(args):
         sys.exit(1)
 
     reviews = []
+    errors = {}
     for model in models:
         if not args.quiet:
             print(f"Sending to {model}...", file=sys.stderr)
@@ -372,8 +399,14 @@ def cmd_check_derivs(args):
                       file=sys.stderr)
         except Exception as e:
             print(f"Error from {model}: {e}", file=sys.stderr)
+            errors[model] = str(e)
+
+    if not reviews:
+        print("Error: all models failed — no reviews collected", file=sys.stderr)
+        sys.exit(1)
 
     result = aggregate_deriv_reviews(str(args.file), reviews)
+    result.errors = errors
 
     if getattr(args, "save_dir", None):
         save_deriv_results(result, args.save_dir, args.quiet)
@@ -416,6 +449,8 @@ def main():
                        help="Comma-separated model list (default: claude,gemini)")
         p.add_argument("--beliefs", type=Path, default=None,
                        help="Path to belief registry (beliefs.md)")
+        p.add_argument("--nogoods", type=Path, default=None,
+                       help="Path to nogoods file (nogoods.md) — known contradictions treated as ground truth")
         p.add_argument("--entries", type=Path, default=None,
                        help="Path to entries directory for chronological context")
         p.add_argument("--timeout", type=int, default=600,

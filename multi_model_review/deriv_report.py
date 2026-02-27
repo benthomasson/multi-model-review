@@ -13,6 +13,12 @@ def format_deriv_report(result: DerivAggregateResult, verbose: bool = False) -> 
     lines.append(f"Models: {', '.join(result.models)}")
     lines.append("")
 
+    if result.errors:
+        lines.append("=== Model Errors ===")
+        for model, error in result.errors.items():
+            lines.append(f"  {model}: {error}")
+        lines.append("")
+
     for review in result.reviews:
         lines.append(f"=== {review.model} ({len(review.verdicts)} derivations) ===")
         lines.append(f"  VALID: {review.valid_count}  GAP: {review.gap_count}  INVALID: {review.invalid_count}")
