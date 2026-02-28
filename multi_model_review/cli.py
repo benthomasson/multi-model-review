@@ -6,7 +6,8 @@ from datetime import datetime
 from pathlib import Path
 
 from . import AggregateResult, RefAggregateResult, DerivAggregateResult
-from .prompt import build_prompt, load_document, load_beliefs, load_nogoods, load_entries
+from .prompt import (build_prompt, build_section_prompt, split_sections,
+                     load_document, load_beliefs, load_nogoods, load_entries)
 from .reviewer import check_model_available, review_file
 from .report import format_report, format_compare, format_json, format_gate
 from .refs import load_and_extract
@@ -116,29 +117,150 @@ def run_reviews(file_path: Path, models: list[str], prompt: str,
     return result
 
 
+def run_sectioned_reviews(file_path: Path, models: list[str],
+                          sections: list[tuple[str, str]],
+                          preamble: str,
+                          beliefs: str | None, nogoods: str | None,
+                          entries: list[str] | None,
+                          timeout: int, quiet: bool) -> AggregateResult:
+    """Review a document section-by-section, then aggregate across models."""
+    from . import ClaimVerdict, ReviewResult
+    reviews = []
+    errors = {}
+
+    for model in models:
+        if not quiet:
+            print(f"Sending to {model} ({len(sections)} sections)...", file=sys.stderr)
+
+        model_claims: list[ClaimVerdict] = []
+        model_raw_parts: list[str] = []
+
+        for i, (title, content) in enumerate(sections):
+            if not quiet:
+                print(f"  {model}: [{i+1}/{len(sections)}] {title}...", file=sys.stderr)
+
+            prompt = build_section_prompt(
+                preamble, title, content,
+                beliefs=beliefs, nogoods=nogoods, entries=entries,
+            )
+
+            try:
+                result = review_file(model, prompt, timeout=timeout)
+                # Prefix claim IDs with section index to avoid collisions
+                for claim in result.claims:
+                    claim.claim_id = f"s{i+1}-{claim.claim_id}"
+                    model_claims.append(claim)
+                model_raw_parts.append(f"--- Section {i+1}: {title} ---\n{result.raw_response}")
+            except Exception as e:
+                if not quiet:
+                    print(f"    Error on section {i+1}: {e}", file=sys.stderr)
+                model_raw_parts.append(f"--- Section {i+1}: {title} ---\nERROR: {e}")
+                # Continue with remaining sections
+
+        if not model_claims and not model_raw_parts:
+            errors[model] = "all sections failed"
+            continue
+
+        pass_count = sum(1 for c in model_claims if c.verdict == "PASS")
+        concern_count = sum(1 for c in model_claims if c.verdict == "CONCERN")
+        block_count = sum(1 for c in model_claims if c.verdict == "BLOCK")
+        gate = "BLOCK" if block_count > 0 else "PASS"
+
+        combined = ReviewResult(
+            model=model,
+            gate=gate,
+            claims=model_claims,
+            raw_response="\n\n".join(model_raw_parts),
+            total=len(model_claims),
+            pass_count=pass_count,
+            concern_count=concern_count,
+            block_count=block_count,
+        )
+        reviews.append(combined)
+        if not quiet:
+            print(f"  {model}: {pass_count}P / {concern_count}C / {block_count}B",
+                  file=sys.stderr)
+
+    result = aggregate_reviews(str(file_path), reviews)
+    result.errors = errors
+    return result
+
+
 def maybe_save(result: AggregateResult, args, quiet: bool) -> None:
     """Save results if --save-dir was provided."""
     if getattr(args, "save_dir", None):
         save_results(result, args.save_dir, quiet)
 
 
-def cmd_review(args):
+def _load_context(args):
+    """Load document, beliefs, nogoods, entries from args."""
     document = load_document(args.file)
     beliefs = load_beliefs(args.beliefs) if args.beliefs else None
     nogoods = load_nogoods(args.nogoods) if args.nogoods else None
     entries = load_entries(args.entries) if args.entries else None
-    prompt = build_prompt(document, beliefs=beliefs, nogoods=nogoods, entries=entries)
+    return document, beliefs, nogoods, entries
 
-    if args.save_prompt:
-        args.save_prompt.write_text(prompt)
-        print(f"Prompt saved to {args.save_prompt}", file=sys.stderr)
-        sys.exit(0)
 
+def _run_sectioned_or_whole(args, document, beliefs, nogoods, entries):
+    """Run sectioned or whole-document review based on --by-section flag."""
     models = parse_models(args.models)
     if not preflight_check(models, quiet=args.quiet):
         sys.exit(1)
 
-    result = run_reviews(args.file, models, prompt, args.timeout, args.quiet)
+    if getattr(args, "by_section", False):
+        sections = split_sections(document)
+        # First section is the preamble — use it as context, review the rest
+        if sections and sections[0][0] == "preamble":
+            preamble = sections[0][1]
+            review_sections = sections[1:] if len(sections) > 1 else sections
+        else:
+            preamble = ""
+            review_sections = sections
+
+        if not review_sections:
+            print("Error: no sections found in document", file=sys.stderr)
+            sys.exit(1)
+
+        if not args.quiet:
+            print(f"Split into {len(review_sections)} sections (+ preamble)", file=sys.stderr)
+
+        return run_sectioned_reviews(
+            args.file, models, review_sections, preamble,
+            beliefs, nogoods, entries, args.timeout, args.quiet,
+        )
+    else:
+        prompt = build_prompt(document, beliefs=beliefs, nogoods=nogoods, entries=entries)
+        return run_reviews(args.file, models, prompt, args.timeout, args.quiet)
+
+
+def cmd_review(args):
+    document, beliefs, nogoods, entries = _load_context(args)
+
+    if args.save_prompt:
+        if getattr(args, "by_section", False):
+            sections = split_sections(document)
+            if sections and sections[0][0] == "preamble":
+                preamble = sections[0][1]
+                review_sections = sections[1:] if len(sections) > 1 else sections
+            else:
+                preamble = ""
+                review_sections = sections
+            save_dir = args.save_prompt
+            save_dir.mkdir(parents=True, exist_ok=True)
+            for i, (title, content) in enumerate(review_sections):
+                prompt = build_section_prompt(
+                    preamble, title, content,
+                    beliefs=beliefs, nogoods=nogoods, entries=entries,
+                )
+                (save_dir / f"section-{i+1}-{title[:40].replace(' ', '-')}.md").write_text(prompt)
+            print(f"Saved {len(review_sections)} section prompts to {save_dir}/", file=sys.stderr)
+        else:
+            prompt = build_prompt(document, beliefs=beliefs, nogoods=nogoods, entries=entries)
+            args.save_prompt.write_text(prompt)
+            print(f"Prompt saved to {args.save_prompt}", file=sys.stderr)
+        sys.exit(0)
+
+    result = _run_sectioned_or_whole(args, document, beliefs, nogoods, entries)
     if not result.reviews:
         print("Error: all models failed — no reviews collected", file=sys.stderr)
         sys.exit(1)
@@ -153,22 +275,15 @@ def cmd_review(args):
 
 
 def cmd_compare(args):
-    document = load_document(args.file)
-    beliefs = load_beliefs(args.beliefs) if args.beliefs else None
-    nogoods = load_nogoods(args.nogoods) if args.nogoods else None
-    entries = load_entries(args.entries) if args.entries else None
-    prompt = build_prompt(document, beliefs=beliefs, nogoods=nogoods, entries=entries)
+    document, beliefs, nogoods, entries = _load_context(args)
 
     if args.save_prompt:
+        prompt = build_prompt(document, beliefs=beliefs, nogoods=nogoods, entries=entries)
         args.save_prompt.write_text(prompt)
         print(f"Prompt saved to {args.save_prompt}", file=sys.stderr)
         sys.exit(0)
 
-    models = parse_models(args.models)
-    if not preflight_check(models, quiet=args.quiet):
-        sys.exit(1)
-
-    result = run_reviews(args.file, models, prompt, args.timeout, args.quiet)
+    result = _run_sectioned_or_whole(args, document, beliefs, nogoods, entries)
     if not result.reviews:
         print("Error: all models failed — no reviews collected", file=sys.stderr)
         sys.exit(1)
@@ -183,26 +298,17 @@ def cmd_compare(args):
 
 
 def cmd_gate(args):
-    document = load_document(args.file)
-    beliefs = load_beliefs(args.beliefs) if args.beliefs else None
-    nogoods = load_nogoods(args.nogoods) if args.nogoods else None
-    entries = load_entries(args.entries) if args.entries else None
-    prompt = build_prompt(document, beliefs=beliefs, nogoods=nogoods, entries=entries)
+    document, beliefs, nogoods, entries = _load_context(args)
 
     if args.save_prompt:
+        prompt = build_prompt(document, beliefs=beliefs, nogoods=nogoods, entries=entries)
         args.save_prompt.write_text(prompt)
         print(f"Prompt saved to {args.save_prompt}", file=sys.stderr)
         sys.exit(0)
 
-    models = parse_models(args.models)
-    if not preflight_check(models, quiet=True):
-        # Print just the missing models for gate mode
-        for model in models:
-            if not check_model_available(model):
-                print(f"missing: {model}", file=sys.stderr)
-        sys.exit(1)
-
-    result = run_reviews(args.file, models, prompt, args.timeout, quiet=True)
+    # Gate mode runs quietly
+    args.quiet = True
+    result = _run_sectioned_or_whole(args, document, beliefs, nogoods, entries)
     if not result.reviews:
         print("Error: all models failed — no reviews collected", file=sys.stderr)
         sys.exit(1)
@@ -458,7 +564,9 @@ def main():
         p.add_argument("--save-dir", type=Path, default=Path("reviews"),
                        help="Save raw responses and aggregate JSON to this directory (default: reviews/)")
         p.add_argument("--save-prompt", type=Path, default=None,
-                       help="Save the review prompt to a file (or directory for check-refs) and exit")
+                       help="Save the review prompt to a file (or directory for check-refs/by-section) and exit")
+        p.add_argument("--by-section", action="store_true",
+                       help="Review document section-by-section instead of all at once")
 
     # review
     review_p = sub.add_parser("review", help="Send file to all models for review")

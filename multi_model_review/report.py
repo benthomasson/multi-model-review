@@ -1,9 +1,34 @@
 """Report formatting for multi-model peer review results."""
 
+import re
 import json
+from collections import OrderedDict
 from dataclasses import asdict
 
 from . import AggregateResult, ReviewResult
+
+
+def _group_by_section(claims):
+    """Group claims by section prefix (s1-, s2-, ...). Returns OrderedDict or None."""
+    if not claims or not any(re.match(r'^s\d+-', c.claim_id) for c in claims):
+        return None
+
+    groups: OrderedDict[str, list] = OrderedDict()
+    for claim in claims:
+        m = re.match(r'^s(\d+)-', claim.claim_id)
+        key = f"Section {m.group(1)}" if m else "Other"
+        groups.setdefault(key, []).append(claim)
+    return groups
+
+
+def _format_claim(claim, show_reasoning: bool = True) -> list[str]:
+    """Format a single claim verdict."""
+    lines = [f"  {claim.verdict:7s}  {claim.claim_id}"]
+    lines.append(f'           "{claim.claim_text}"')
+    if show_reasoning:
+        lines.append(f"           Reasoning: {claim.reasoning}")
+    lines.append("")
+    return lines
 
 
 def format_review(review: ReviewResult, verbose: bool = False) -> str:
@@ -14,22 +39,31 @@ def format_review(review: ReviewResult, verbose: bool = False) -> str:
     lines.append(f"  PASS: {review.pass_count}  CONCERN: {review.concern_count}  BLOCK: {review.block_count}")
     lines.append("")
 
-    # Show BLOCKs first, then CONCERNs
-    for verdict_type in ["BLOCK", "CONCERN"]:
-        for claim in review.claims:
-            if claim.verdict == verdict_type:
-                lines.append(f"  {claim.verdict:7s}  {claim.claim_id}")
-                lines.append(f'           "{claim.claim_text}"')
-                lines.append(f"           Reasoning: {claim.reasoning}")
-                lines.append("")
+    groups = _group_by_section(review.claims)
 
-    if verbose:
-        # Show PASSes too
-        for claim in review.claims:
-            if claim.verdict == "PASS":
-                lines.append(f"  PASS     {claim.claim_id}")
-                lines.append(f'           "{claim.claim_text}"')
-                lines.append("")
+    if groups:
+        # Section-grouped output
+        for section, claims in groups.items():
+            lines.append(f"  --- {section} ---")
+            for verdict_type in ["BLOCK", "CONCERN"]:
+                for claim in claims:
+                    if claim.verdict == verdict_type:
+                        lines.extend(_format_claim(claim))
+            if verbose:
+                for claim in claims:
+                    if claim.verdict == "PASS":
+                        lines.extend(_format_claim(claim, show_reasoning=False))
+    else:
+        # Original flat output
+        for verdict_type in ["BLOCK", "CONCERN"]:
+            for claim in review.claims:
+                if claim.verdict == verdict_type:
+                    lines.extend(_format_claim(claim))
+
+        if verbose:
+            for claim in review.claims:
+                if claim.verdict == "PASS":
+                    lines.extend(_format_claim(claim, show_reasoning=False))
 
     return "\n".join(lines)
 

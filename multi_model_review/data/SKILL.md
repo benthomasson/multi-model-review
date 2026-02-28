@@ -28,6 +28,15 @@ multi-model-review check-derivs <file.md>
 
 # Check derivations with belief context
 multi-model-review check-derivs <file.md> --beliefs beliefs.md --entries entries/
+
+# Review a long paper section-by-section (avoids timeouts on large documents)
+multi-model-review review <file.md> --by-section
+
+# Section-by-section with a single model
+multi-model-review review <file.md> --by-section --models gemini
+
+# Save per-section prompts to inspect before running
+multi-model-review review <file.md> --by-section --save-prompt /tmp/sections/
 ```
 
 ## Exit codes
